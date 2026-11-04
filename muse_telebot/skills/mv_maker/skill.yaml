@@ -1,0 +1,5 @@
+name: "mv_maker"
+title: "MV Maker"
+description: "Sản xuất MV điện ảnh từ một bài hát + mô tả ngắn: xử lý nhạc nguyên bài, beat sheet theo lời, shot list 10 giây, gen clip theo batch tự chạy (cron), QA khóa mặt, ghép final 720p khớp nhạc."
+category: "Creative"
+include_in_prompt: true
