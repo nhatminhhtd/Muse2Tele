@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Tu dong bam Allow tren cac yeu cau duyet (Allow/Deny) cua muse.ai, o moi tab muse.ai (main chat / side chat) cua
-cac profile trong muse_sync.json. Chay nhu 1 thread trong muse_telebot.py; bat/tat bang /approve_on, /approve_off.
+cac profile da co topic. Chay nhu 1 thread trong muse_telebot.py; bat/tat bang /allow_on, /allow_off (mac dinh BAT).
 Trang thai bat/tat luu trong muse_autoapprove.json ({"on": true/false}) nen giu nguyen qua lan restart bot.
 
 Tab duoc doc ngam qua tham so "tab" cua FoxProfile (khong chuyen tab); profile chua mo thi bo qua, khong tu mo.
@@ -20,7 +20,7 @@ INTERVAL_SECONDS = 5
 # Nut Allow cua yeu cau duyet (Allow/Deny) tren muse.ai; chi bam nut dang hien thi, moi lan 1 nut.
 CLICK_ALLOW_JS = """() => {
   const b = [...document.querySelectorAll('button[data-hatch-approval-primary-action="true"]')]
-    .find(e => e.innerText.trim() === 'Allow' && e.offsetParent !== null && !e.disabled);
+    .find(e => ['Allow', 'Cho phép'].includes(e.innerText.trim()) && e.offsetParent !== null && !e.disabled);
   if (!b) return null;
   let p = b;
   for (let i = 0; i < 8 && p.parentElement; i++) { p = p.parentElement; if (p.innerText.length > 120) break; }
@@ -29,12 +29,25 @@ CLICK_ALLOW_JS = """() => {
   return ctx;
 }"""
 
+# Bang ben phai cua Muse co 3 tab (Hoat dong / Phe duyet / Danh tinh, nut aria-pressed): yeu cau duyet chi hien o tab
+# Phe duyet. Chua o tab do thi bam sang. Nhan theo ngon ngu, du phong nut thu 2 cua nhom 3 nut. Kiem tra 2026-11-04.
+APPROVALS_TAB_JS = """() => {
+  const all = [...document.querySelectorAll('button[aria-pressed]')];
+  const b = all.find(e => ['Phê duyệt', 'Approvals', 'Approval'].includes(e.getAttribute('aria-label')))
+    || (() => { const g = all.filter(e => e.parentElement === (all[0] || {}).parentElement); return g.length === 3 ? g[1] : null; })();
+  if (!b) return 'missing';
+  if (b.getAttribute('aria-pressed') === 'true') return 'ok';
+  b.click(); return 'switched';
+}"""
+
 logger = logging.getLogger("muse.auto")
 
 
 def enabled():
     try:
         return bool(json.loads(STATE_FILE.read_text(encoding="utf-8")).get("on"))
+    except FileNotFoundError:
+        return True  # mac dinh bat: Muse khong bi ket cho nguoi bam Allow tren web
     except (OSError, ValueError, AttributeError):
         return False
 
@@ -57,25 +70,23 @@ def approve_once(profile):
         return fox.evaluate(CLICK_ALLOW_JS)
     for t in tabs:
         fox.tab = t["url"]
+        if fox.evaluate(APPROVALS_TAB_JS) == "switched":
+            logger.info(f"{profile}: chuyen sang tab Phe duyet")
+            time.sleep(1)
         clicked = fox.evaluate(CLICK_ALLOW_JS)
         if clicked:
             return clicked
     return None
 
 
-def all_profiles():
-    """Profile trong muse_sync.json + pool Free + profile VIP."""
-    import muse_users  # import muon: muse_users mo database luc import
-    return list(dict.fromkeys(muse_sync.profiles() + muse_users.FREE_PROFILES + muse_users.vip_profiles()))
-
-
-def loop(notify):
-    """Chay mai: moi INTERVAL_SECONDS quet cac profile; bam duoc thi goi notify(profile, mo_ta)."""
+def loop(profiles, notify):
+    """Chay mai: moi INTERVAL_SECONDS quet cac profile (profiles() tra ve danh sach); bam duoc thi goi
+    notify(profile, mo_ta)."""
     while True:
         time.sleep(INTERVAL_SECONDS)
         if not enabled():
             continue
-        for profile in all_profiles():
+        for profile in profiles():
             if not muse_sync.lock.acquire(blocking=False):  # dang gui tin vao muse: de lan sau
                 break
             try:
