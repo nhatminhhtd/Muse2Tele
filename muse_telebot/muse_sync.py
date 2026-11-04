@@ -1,18 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Thao tac voi muse.ai qua FoxProfile: gui tin (text + anh/video/file) vao main chat / side chat cua cac profile,
-doc tin tra loi + anh/video cua Muse (de bot chuyen ve Telegram), tao / xoa side chat. Bot: muse_telebot.py.
+Thao tac voi muse.ai qua FoxProfile: gui tin (text + anh/video/file) vao main chat cua 1 profile, doc tin tra loi +
+anh/video/file cua Muse (de bot chuyen ve Telegram), kiem tra profile da dang nhap Muse chua, kiem tra IP cua profile.
 
-Map chat -> Telegram cau hinh trong muse_sync.json (doc lai moi lan dung: sua file khong can restart bot):
-    {"channels": {"Muse": "-1001234567890", "Muse2": ""},                            # main chat cua profile
-     "threads": {"Muse2": {"2069a4bb-5b51-4a86-ada9-bfb92a2641f1": "-100987654321"}}}  # side chat: id hoac URL
-Gia tri = chat id Telegram (kenh / nhom) ma moi bai dang trong do duoc chuyen vao chat muse tuong ung,
-hoac "<chat id>/<topic id>" de map 1 topic cua nhom co topic (moi side chat 1 topic).
-De rong "" thi chat muse do chi nhan tin tu chat rieng voi bot (lenh /to, /<profile>).
-Id side chat = phan cuoi URL https://muse.ai/thread/<id> (mo side chat tren web roi copy tu thanh dia chi).
-
-Go ngam: moi chat duoc mo tren tab co dung URL cua no qua tham so "tab" cua FoxProfile -- khong chuyen tab, khong
-keo cua so len. Loi thi refresh trang va thu lai toi SEND_ATTEMPTS lan.
+Go ngam: chat duoc mo tren tab co dung URL cua no qua tham so "tab" cua FoxProfile -- khong chuyen tab, khong keo
+cua so len. Loi thi refresh trang va thu lai toi SEND_ATTEMPTS lan.
 """
 
 import base64
@@ -23,17 +15,15 @@ import sys
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlparse
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "foxprofile"))
 from foxprofile_client import FoxError, FoxProfileBrowser, same_url  # noqa: E402
 
-CONFIG_FILE = HERE / "muse_sync.json"
 MUSE_URL = "https://muse.ai/"
-THREAD_URL = MUSE_URL + "thread/"  # side chat: https://muse.ai/thread/<id>
-NEW_THREAD_URL = THREAD_URL + "new"  # gui tin dau tien o day thi muse tao side chat moi va doi URL sang /thread/<id>
-MUSE_INPUT = 'textarea[aria-label="Message"]'
+# O chat cua Muse; nhan theo ngon ngu giao dien (tieng Anh / tieng Viet), du phong: textarea dau tien cua composer.
+MUSE_INPUT = ('textarea[aria-label="Message"], textarea[aria-label="Nhắn tin"], '
+              'textarea[data-hatch-composer-prehydration-input]')
 MUSE_FILE_INPUT = "input[type='file']"
 SEND_ATTEMPTS = 3  # lan dau dung trang dang mo; cac lan sau refresh trang roi thu lai
 UPLOAD_MAX_WAIT_SECONDS = 30
@@ -209,86 +199,9 @@ FILE_JS = """async () => { const id = %s, name = %s, sleep = ms => new Promise(r
   } finally {
     const x = document.querySelector('[data-testid="hatch-file-editor-close"]'); if (x) x.click(); }
   return text; }"""
-# Xoa side chat dang mo: menu "More thread actions" cua dong side chat hien tai (Radix: mo bang pointerdown) ->
-# Delete -> xac nhan. Bang danh sach side chat phai dang mo (nut hatch-chat-switcher-trigger).
-THREAD_ROW = '[data-testid="hatch-thread-row"][aria-current="page"]'
-OPEN_THREAD_MENU_JS = """() => { const b = document.querySelector('%s button[aria-label="More thread actions"]');
-  if (!b) return false;
-  b.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, cancelable: true, button: 0, pointerType: 'mouse'}));
-  return true; }""" % THREAD_ROW
-CLICK_JS = """() => { const e = [...document.querySelectorAll('%s')].find(e => e.getClientRects().length);
-  if (!e) return false; e.click(); return true; }"""
 
 logger = logging.getLogger("muse.sync")
 lock = threading.Lock()  # 1 trinh duyet / 1 o chat: gui tung tin mot (muse_auto cung dung)
-
-
-def load_config(path=CONFIG_FILE):
-    try:
-        cfg = json.loads(Path(path).read_text(encoding="utf-8"))
-        return cfg if isinstance(cfg, dict) else {}
-    except (OSError, ValueError) as e:
-        logger.warning(f"Khong doc duoc {path}: {e}")
-        return {}
-
-
-def save_config(cfg, path=CONFIG_FILE):
-    tmp = Path(path).with_suffix(".tmp")
-    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def thread_id(thread):
-    """Id side chat tu id tran hoac URL day du https://muse.ai/thread/<id>."""
-    return urlparse(thread.strip()).path.rstrip("/").rpartition("/")[2]
-
-
-def map_tg(key, tg):
-    """Map chat Telegram tg ("<chat id>" hoac "<chat id>/<topic id>") vao chat muse key ("<profile>" hoac
-    "<profile>/<thread id>"; side chat chua co trong file thi them moi). Bo tg nay khoi cac chat muse khac."""
-    cfg = load_config()
-    channels, threads = cfg.setdefault("channels", {}), cfg.setdefault("threads", {})
-    for profile, value in channels.items():
-        if str(value).strip() == tg:
-            channels[profile] = ""
-    for side in threads.values():
-        for thread, value in side.items():
-            if str(value).strip() == tg:
-                side[thread] = ""
-    profile, _, tid = key.partition("/")
-    if tid:
-        side = threads.setdefault(profile, {})
-        side[next((t for t in side if thread_id(t) == tid), tid)] = tg
-    else:
-        channels[profile] = tg
-    save_config(cfg)
-
-
-def muse_chats(cfg=None):
-    """Cac chat muse trong muse_sync.json: main chat ("channels") va side chat ("threads"), moi chat la
-    {"profile", "url", "tg", "key"}. tg = chat id Telegram map voi chat do ("" neu khong map),
-    key = ten hien thi: main chat la ten profile, side chat la "<profile>/<thread id>"."""
-    cfg = load_config() if cfg is None else cfg
-    chats = []
-    for profile, tg in (cfg.get("channels") or {}).items():
-        chats.append({"profile": profile, "url": MUSE_URL, "tg": str(tg or "").strip(), "key": profile})
-    for profile, threads in (cfg.get("threads") or {}).items():
-        for thread, tg in (threads or {}).items():
-            tid = thread_id(thread)  # nhan ca id tran lan URL day du
-            if tid:
-                chats.append({"profile": profile, "url": THREAD_URL + tid, "tg": str(tg or "").strip(),
-                              "key": f"{profile}/{tid}"})
-    return chats
-
-
-def chats_by_tg(cfg=None):
-    """chat id Telegram -> chat muse. 1 chat Telegram map nhieu chat muse thi lay chat dau tien.
-    Nhom co topic: gia tri "<chat id>/<topic id>" map rieng tung topic."""
-    return {c["tg"]: c for c in reversed(muse_chats(cfg)) if c["tg"]}
-
-
-def profiles(cfg=None):
-    return list(dict.fromkeys(c["profile"] for c in muse_chats(cfg)))
 
 
 def fox_profiles():
@@ -348,19 +261,6 @@ def fetch_file(fox, message_id, name):
         return fox.evaluate(FILE_JS % (json.dumps(message_id), json.dumps(name)))
 
 
-def close_tab(profile, url):
-    """Dong tab cua chat (side chat xong viec: do ton tai nguyen). Khong dong tab cuoi cung cua profile."""
-    with lock:
-        fox = FoxProfileBrowser(profile, log=logger.info)
-        fox.profile_exists()
-        tabs = fox.tabs()
-        for t in tabs:
-            if len(tabs) > 1 and same_url(t["url"], url):
-                fox.tab_close(t["index"])
-                return True
-    return False
-
-
 _restarted = {}  # profile -> luc khoi dong lai gan nhat
 
 
@@ -386,164 +286,6 @@ def restart_profile(profile, why=""):
             fox.open_tab(url)
         except Exception as e:
             logger.warning(f"{profile}: khong mo lai duoc tab {url}: {e}")
-
-
-def new_side_chat(profile, text, files=()):
-    """Tao side chat moi trong profile bang tin dau tien text (+ files). Tra ve id side chat (tab cua no van mo)."""
-    with lock:
-        fox = FoxProfileBrowser(profile, log=logger.info)
-        if not fox.profile_exists():
-            raise FoxError(404, f"Profile '{profile}' chua co trong FoxProfile")
-        fox.ensure()
-        tabs = fox.tabs()
-        index = next((t["index"] for t in tabs if same_url(t["url"], NEW_THREAD_URL)), None)  # tab sot lai: dung lai
-        if index is None:
-            index = next(t["index"] for t in fox.tab_new(NEW_THREAD_URL) if t["active"])
-        before = {t["url"] for t in tabs}
-        fox.tab = NEW_THREAD_URL
-        if not fox.wait_visible(MUSE_INPUT, 30):
-            raise FoxError(0, f"{profile}: khong thay o chat tren {NEW_THREAD_URL} (can dang nhap lai?)")
-        upload_files(fox, files)
-        fox.type_into(MUSE_INPUT, text)
-        fox.press("Enter", MUSE_INPUT)
-        for _ in range(60):  # muse doi URL sang /thread/<id> ngay khi tin dau tien duoc gui (~2s)
-            time.sleep(0.5)
-            url = next((t["url"] for t in fox.tabs() if t["index"] == index), "")
-            tid = thread_id(url)
-            if url.startswith(THREAD_URL) and tid != "new" and url not in before:
-                logger.info(f"{profile}: tao side chat {tid}")
-                return tid
-    raise FoxError(0, f"{profile}: gui tin dau tien nhung muse chua tao side chat")
-
-
-def delete_side_chat(profile, tid):
-    """Xoa han side chat tid cua profile (khong khoi phuc duoc). Side chat da mat thi coi nhu xong."""
-    url = THREAD_URL + tid
-    with lock:
-        fox = FoxProfileBrowser(profile, log=logger.info)
-        if not fox.profile_exists():
-            raise FoxError(404, f"Profile '{profile}' chua co trong FoxProfile")
-        fox.ensure()
-        try:
-            fox.open_tab(url)
-        except FoxError as e:
-            if e.status == 404:  # trang chuyen di noi khac: side chat khong con
-                logger.info(f"{profile}: side chat {tid} khong con, bo qua")
-                return
-            raise
-        opened = fox.wait_visible(MUSE_INPUT, 30)
-        time.sleep(3)
-        if _thread_gone(fox, url):
-            fox.navigate(url)  # thu lai 1 lan: loi tam thoi thi lan nay mo duoc
-            opened = fox.wait_visible(MUSE_INPUT, 20)
-            time.sleep(3)
-            if _thread_gone(fox, url):
-                _drop_tab(fox, url)
-                logger.info(f"{profile}: side chat {tid} khong con, bo qua")
-                return
-        if not opened:
-            raise FoxError(0, f"{profile}: khong mo duoc side chat {tid}")
-        has_row = "() => !!document.querySelector('%s')" % THREAD_ROW
-        for _ in range(10):  # mo bang danh sach side chat (nut co the bi che: bam bang JS)
-            if fox.evaluate(has_row):
-                break
-            fox.evaluate(CLICK_JS % '[data-testid="hatch-chat-switcher-trigger"]')
-            time.sleep(1.5)
-        steps = [OPEN_THREAD_MENU_JS, CLICK_JS % '[role=menuitem][data-pel-click="chat_thread_delete_open"]',
-                 CLICK_JS % 'button[data-pel-click="chat_thread_delete_confirm"]']
-        for i, js in enumerate(steps):
-            if not fox.evaluate(js):
-                raise FoxError(0, f"{profile}: xoa side chat {tid} that bai o buoc {i + 1}")
-            time.sleep(1)
-        for _ in range(20):  # xoa xong muse chuyen tab ve main chat: dong tab do
-            time.sleep(0.5)
-            if not any(same_url(t["url"], url) for t in fox.tabs()):
-                _drop_tab(fox, url)
-                logger.info(f"{profile}: da xoa side chat {tid}")
-                return
-    raise FoxError(0, f"{profile}: da bam xoa nhung side chat {tid} van con")
-
-
-# Reset Muse: Settings (dock) -> Settings -> Data controls -> Reset Muse -> go ten agent -> Reset. Kiem tra 2026-10-28.
-OPEN_SETTINGS_MENU_JS = """() => { const b = document.querySelector('[data-testid="hatch-dock-more"]');
-  if (!b) return false;
-  for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup'])
-    b.dispatchEvent(new PointerEvent(t, {bubbles: true, cancelable: true, button: 0, pointerType: 'mouse'}));
-  b.click(); return true; }"""
-CLICK_TEXT_JS = """() => { const d = [...document.querySelectorAll('[role=dialog]')].filter(e => e.getClientRects().length).pop();
-  const el = d && [...d.querySelectorAll('button, [role=button]')].find(e => e.innerText.trim().startsWith(%s));
-  if (!el) return false; el.click(); return true; }"""
-FILL_AGENT_NAME_JS = """() => { const i = document.querySelector('input[placeholder="Agent name"]');
-  if (!i) return false;
-  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, %s);
-  i.dispatchEvent(new Event('input', {bubbles: true})); return true; }"""
-RESET_BUTTON = 'button[data-pel-click="settings_data_privacy_reset_confirm_click"]'
-
-
-def agent_name(fox):
-    """Ten agent cua profile: tieu de tab "Chat — <ten>", khong co thi dong dau khung trang thai."""
-    name = fox.evaluate("() => document.title").rpartition("—")[2].strip()
-    if not name:
-        name = (fox.evaluate("""() => { const p = document.querySelector('[data-hatch-status-panel-card]');
-                                         return p ? p.innerText.split('\\n')[0] : ''; }""") or "").strip()
-    return name
-
-
-def reset_muse(profile):
-    """Xoa het du lieu Muse cua profile (lich su chat, file, artifact, task) bang Reset Muse trong Settings. Khong
-    khoi phuc duoc. Dong cac tab side chat truoc, chi giu 1 tab main chat."""
-    with lock:
-        fox = FoxProfileBrowser(profile, log=logger.info)
-        if not fox.profile_exists():
-            raise FoxError(404, f"Profile '{profile}' chua co trong FoxProfile")
-        fox.ensure()
-        tabs = fox.tabs()
-        keep = next((t["index"] for t in tabs if same_url(t["url"], MUSE_URL)), None)
-        for t in sorted(tabs, key=lambda t: -t["index"]):
-            if t["index"] != keep and len(fox.tabs()) > 1:
-                fox.tab_close(t["index"])
-        fox.open_tab(MUSE_URL)
-        fox.navigate(MUSE_URL)  # trang sach, khong con hop thoai cu
-        if not fox.wait_visible(MUSE_INPUT, 30):
-            raise FoxError(0, f"{profile}: khong mo duoc main chat (can dang nhap lai?)")
-        name = agent_name(fox)
-        if not name:
-            raise FoxError(0, f"{profile}: khong doc duoc ten agent de xac nhan reset")
-        steps = [("mo menu Settings", OPEN_SETTINGS_MENU_JS),
-                 ("mo Settings", CLICK_JS % '[role=menuitem][data-pel-click="settings_nav_click"]'),
-                 ("mo Data controls", CLICK_TEXT_JS % json.dumps("Data controls")),
-                 ("bam Reset Muse", CLICK_TEXT_JS % json.dumps("Reset Muse")),
-                 ("go ten agent", FILL_AGENT_NAME_JS % json.dumps(name))]
-        for label, js in steps:
-            if not fox.evaluate(js):
-                raise FoxError(0, f"{profile}: reset Muse that bai o buoc {label}")
-            time.sleep(1.5)
-        if not fox.evaluate(f"() => {{ const b = document.querySelector('{RESET_BUTTON}'); "
-                            f"if (!b || b.disabled) return false; b.click(); return true; }}"):
-            raise FoxError(0, f"{profile}: nut Reset chua bat sau khi go ten agent '{name}'")
-        for _ in range(60):  # cho hop thoai xac nhan dong (reset xong)
-            time.sleep(1)
-            if not fox.evaluate(f"() => !!document.querySelector('{RESET_BUTTON}')"):
-                logger.info(f"{profile}: da reset Muse (agent '{name}')")
-                return name
-    raise FoxError(0, f"{profile}: da bam Reset nhung hop xac nhan chua dong sau 60s")
-
-
-def _thread_gone(fox, url):
-    """Side chat url khong con: tab da tu chuyen ve main chat, hoac trang bao "Something went wrong" (side chat da
-    xoa van co the hien o chat)."""
-    if not any(same_url(t["url"], url) for t in fox.tabs()):
-        return True
-    return "Something went wrong" in fox.text_of("body", 3000)
-
-
-def _drop_tab(fox, url):
-    """Dong tab cua side chat url (hoac tab dang mo neu no da chuyen sang trang khac); giu lai tab cuoi cung."""
-    tabs = fox.tabs()
-    index = next((t["index"] for t in tabs if same_url(t["url"], url)),
-                 next((t["index"] for t in tabs if t["active"]), None))
-    if len(tabs) > 1 and index is not None:
-        fox.tab_close(index)
 
 
 def upload_files(fox, files):
@@ -630,3 +372,33 @@ def send(chat, text="", files=(), seen=None, base=None):
             logger.warning(f"send {chat['key']} lan {attempt + 1}/{SEND_ATTEMPTS + 1}: {msg}")
             time.sleep(2)
     return False, f"{msg} Da refresh va thu lai van loi."
+
+
+def muse_ready(profile):
+    """Profile dang mo va da dang nhap Muse (o chat cua main chat hien ra)? Khong tu mo profile dang tat.
+    Profile chua co tab muse.ai thi mo 1 tab (trang chuyen sang trang dang nhap thi tab do tu dong)."""
+    fox = FoxProfileBrowser(profile, log=logger.debug)
+    if not fox.profile_exists() or not fox.is_running():
+        return False
+    with lock:
+        try:
+            fox.open_tab(MUSE_URL)
+        except FoxError as e:
+            if e.status == 404:  # bi chuyen sang trang dang nhap: chua dang nhap
+                return False
+            raise
+        return fox.visible(MUSE_INPUT, 3000)
+
+
+VN_NAMES = {"vn", "vietnam", "viet nam"}
+
+
+def ip_check(profile):
+    """IP ma profile dung de vao Muse (qua proxy cua profile, khong co proxy thi la IP may nay):
+    (ip, quoc gia, co phai Viet Nam). FoxProfile hoi Cloudflare / ipinfo / ip-api (~10s)."""
+    fox = FoxProfileBrowser(profile, log=logger.debug)
+    r = fox._call("GET", f"/profiles/{profile}/ip-check", timeout=60).json()
+    countries = [r.get("country")] + [s.get("country") for s in r.get("sources") or []]
+    countries = [c for c in countries if c]
+    is_vn = any(c.strip().casefold() in VN_NAMES for c in countries)
+    return r.get("exit_ip") or "?", (countries[0] if countries else "?"), is_vn
