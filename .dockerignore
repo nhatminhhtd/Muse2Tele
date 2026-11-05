@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+!.env.example
+.venv
+venv
+__pycache__
+*.log
+foxprofile/data
+foxprofile/repo/camoufox_data
+Videos
+muse_telebot/muse_telebot_state.json
+muse_telebot/*.db
+muse_telebot/*.sqlite*
+*.sqlite*
