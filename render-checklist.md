@@ -1,5 +1,10 @@
 # Muse2Tele len Render — checklist (chua deploy)
 
+> SUA NGAY 05/11/2026 — anh muon Render FREE: ban Background Worker + disk
+> o muc 3 KHONG ap dung duoc cho free, vi Render free khong co Background
+> Worker va khong gan duoc disk. Xem them muc 7 (ban free test) o cuoi.
+> Ban tra phi van dung muc 3 neu sau nay anh doi y.
+
 Bo file nay + `Dockerfile`, `start.sh`, `run_bot_linux.py`, `.dockerignore`
 copy vao **thu muc goc cua repo Muse2Tele** (cung cap voi `requirements.txt`),
 roi moi tao service tren Render. Em chua deploy that vi con thieu:
@@ -73,6 +78,36 @@ Windows cua anh (da bi `.gitignore` loai). Len Render phai lam 1 trong 2 cach:
 
 Sau do, mo profile len, cho bot tu tao topic, roi moi lam tiep tren Telegram:
 `/start` (nguoi dau tien = chu bot) → tao nhom co Topics → `/setup`.
+
+## 7. Ban FREE (test, khong phai ban chay on dinh)
+
+Chi ap dung khi anh chap nhan test, khong dung lam ban chinh:
+
+- Loai service: **Web Service — Free** (512 MB RAM, 0.1 CPU), khong phai
+  Background Worker. Free khong co Worker, khong co disk, khong co SSH
+  cua Render.
+- File moi `health_server.py` + dong mo `$PORT` trong `start.sh` la de
+  Render tinh service la Live (bot goc khong mo cong $PORT). Health
+  server chi tra `ok` o `/` va `/health`, khong mo panel FoxProfile.
+- Giu song: dung dich vu ping mien phi ben ngoai (vi du UptimeRobot,
+  cron-job.org) goi `https://<ten-service>.onrender.com/health` moi
+  10 phut, vi free se ngu sau 15 phut khong co traffic vao. Khong ping
+  thi bot dung theo.
+- Gioi han khong khac phuc duoc tren free:
+  - Khong disk: moi lan ngu/restart/redeploy deu mat login Muse,
+    `profiles.json`, map admin/nhom/topic. Luc do phai dang nhap Muse
+    lai va bot co the tao topic trung.
+  - RAM 512 MB: FoxProfile + Camoufox + bot + Tailscale rat de tran RAM,
+    nhat la tu 2 profile tro len. Test toi da 1 profile truoc.
+  - 750 gio free/thang cho ca workspace, 500 phut build/thang. Ping
+    24/7 gan het 720 gio/thang, build Docker lan dau an nhieu phut.
+  - Khi service ngu thi ca Tailscale SSH cung ngu theo, phai cho
+    Render danh thuc lai (khoang 1 phut) moi SSH duoc.
+- Neu test free that bai vi RAM hoac mat login lien tuc thi dung co
+  gang them: phuong an free that su on dinh la chay bot tren may
+  Windows san co (ban goc), hoac goi tra phi thap nhat: Worker Starter
+  + disk 1 GB (chi de co Worker + disk, van 512 MB RAM nen van co
+  rui ro tran RAM; muon on dinh thi Standard 2 GB).
 
 ## 6. Rui ro can biet truoc
 

@@ -30,6 +30,13 @@ export BOT_STATE_FILE="$DATA_ROOT/bot/muse_telebot_state.json"
 
 mkdir -p "$FOXPROFILE_DATA_DIR" "$DATA_ROOT/uploads/muse_telebot" "$DATA_ROOT/bot" /var/lib/tailscale /var/run/tailscale
 
+# Ban FREE dang Web Service: Render bat buoc mo $PORT. Neu PORT co gia tri
+# thi chay health server o background ngay tu dau, de Render tinh la Live.
+# Tren Background Worker, PORT khong co nen dong nay khong chay.
+if [ -n "$PORT" ]; then
+  python health_server.py &
+fi
+
 # 1. Tailscale userspace (Render khong co quyen kernel/TUN).
 tailscaled --tun=userspace-networking --socks5-server=localhost:1055 \
   --state=/var/lib/tailscale/tailscaled.state \
