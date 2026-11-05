@@ -15,7 +15,9 @@ Trang thai (muse_telebot_state.json, bot tu tao):
     {"admin": <user id chu bot>, "group": <chat id nhom>, "topics": {"<profile>": <topic id>},
      "delivered": {"<profile>": [id tin Muse da chuyen]}, "watched": ["<profile>"]}
 
-.env (thu muc goc Muse2tele): TELEGRAM_BOT_TOKEN, MUSE_UPLOAD_DIR (phai nam trong FOXPROFILE_UPLOAD_DIRS).
+.env (thu muc goc Muse2tele): TELEGRAM_BOT_TOKEN, MUSE_UPLOAD_DIR (phai nam trong FOXPROFILE_UPLOAD_DIRS),
+TELEGRAM_ADMIN_ID (tuy chon, so ID Telegram cua chu bot; neu dat thi chi ID do moi la admin, khong ai
+chiem quyen admin bang cach gui /start truoc duoc).
 """
 
 import ctypes
@@ -53,8 +55,32 @@ load_dotenv(HERE / ".env")
 load_dotenv(ENV_FILE)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-UPLOAD_DIR = Path(os.environ.get("MUSE_UPLOAD_DIR", str(ROOT / "Videos" / "downloads" / "muse_telebot")))
+# Khoa admin (chong chiem quyen): neu dat TELEGRAM_ADMIN_ID thi chi ID do moi la admin,
+# bat ke state cu hay ai gui /start truoc. Khong dat thi giu hanh vi cu: nguoi dau tien
+# gui /start (rieng) hoac /setup (nhom) se tro thanh admin.
+ADMIN_ID_ENV = os.environ.get("TELEGRAM_ADMIN_ID", "").strip()
+
+
+def _env_admin_id():
+    if not ADMIN_ID_ENV:
+        return None
+    try:
+        return int(ADMIN_ID_ENV)
+    except ValueError:
+        return None
+
+
+# MUSE_UPLOAD_DIR trong .env.example tinh tu thu muc muse_telebot (vd "..\\Videos\\...").
+# Giai quyet tuong doi theo HERE (thu muc muse_telebot), khong theo thu muc hien tai,
+# de chay bot tu bat ky thu muc nao cung ra dung duong dan, roi chuan hoa ".." di.
+_upload_env = os.environ.get("MUSE_UPLOAD_DIR", "").strip()
+if _upload_env:
+    _upload_path = Path(_upload_env)
+    UPLOAD_DIR = (_upload_path if _upload_path.is_absolute() else HERE / _upload_path).resolve()
+else:
+    UPLOAD_DIR = (ROOT / "Videos" / "downloads" / "muse_telebot").resolve()
 STATE_FILE = HERE / "muse_telebot_state.json"
+STATE_BACKUP_FILE = HERE / "muse_telebot_state.json.bak"
 TG_DOWNLOAD_LIMIT = 20 * 1024 * 1024  # getFile cua Bot API
 TG_UPLOAD_LIMIT = 50 * 1024 * 1024  # gui file qua Bot API
 MEDIA_UPLOAD_TIMEOUT = 300
@@ -111,14 +137,36 @@ ip_warned = {}  # profile -> luc canh bao IP VN gan nhat
 
 # ---------- trang thai ----------
 
+def _read_state_file(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def load_state():
+    # File state loi (mat dien luc ghi, file hong) truoc day bi tra ve {} trong lang,
+    # lam mat admin/nhom/topic va bot co the tao topic trung, nguoi la chiem admin.
+    # Nay thu khoi phuc tu ban backup truoc khi chap nhan trang thai trong.
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return _read_state_file(STATE_FILE)
+    except FileNotFoundError:
+        # Chua co state: khoi dong lan dau, khong khoi phuc backup (de xoa state la reset duoc).
+        return {}
+    except (OSError, ValueError):
+        logger.warning("File state chinh loi, thu khoi phuc tu ban backup.")
+    try:
+        data = _read_state_file(STATE_BACKUP_FILE)
+        logger.warning("Da khoi phuc state tu ban backup.")
+        return data
     except (OSError, ValueError):
         return {}
 
 
 def save_state(state):
+    # Chi backup khi file state hien tai con doc duoc; khong de file hong ghi de len backup tot.
+    try:
+        _read_state_file(STATE_FILE)
+        shutil.copy(STATE_FILE, STATE_BACKUP_FILE)
+    except (OSError, ValueError):
+        pass
     tmp = STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=1, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, STATE_FILE)
@@ -133,6 +181,9 @@ def update_state(change):
 
 
 def admin_id():
+    env_admin = _env_admin_id()
+    if env_admin is not None:
+        return env_admin
     return load_state().get("admin")
 
 
@@ -1024,7 +1075,12 @@ def console_guide(problem):
         subprocess.Popen(["notepad.exe", str(ENV_FILE)])
     except Exception:
         pass
-    input("Bam Enter de thoat...")
+    # Chay khong tuong tac (Task Scheduler, service): input() se loi EOF hoac treo,
+    # nen thoat ngay thay vi treo; nguoi dung sua .env roi chay lai.
+    try:
+        input("Bam Enter de thoat...")
+    except (EOFError, KeyboardInterrupt):
+        pass
     sys.exit(1)
 
 
@@ -1036,6 +1092,14 @@ def main():
         raise SystemExit("Bot dang chay o cua so khac -- thoat")
     if not TOKEN:
         console_guide("CHUA CO TOKEN BOT TELEGRAM")
+    # Kiem tra dinh dang token truoc khi goi Telegram: token co dau cach hoac thieu
+    # phan sau dau ":" truoc day chi hien loi 401 chung chung, kho doan.
+    if " " in TOKEN or not re.fullmatch(r"\d+:[\w-]{20,}", TOKEN):
+        console_guide("TOKEN BOT TELEGRAM SAI DINH DANG (co dau cach hoac thieu phan sau dau :). "
+                      "Lay lai token nguyen ven tu @BotFather, dan vao .env khong them dau cach.")
+    if ADMIN_ID_ENV and _env_admin_id() is None:
+        logger.warning("TELEGRAM_ADMIN_ID khong phai so, bo qua gia tri nay. Lay ID so tu @userinfobot, "
+                       "khong phai username (@...).")
     try:
         me = bot.get_me()
     except ApiTelegramException:
@@ -1043,6 +1107,22 @@ def main():
     except requests.RequestException as e:
         raise SystemExit(f"Khong ket noi duoc Telegram: {e}")
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    # Kiem tra som: file gui len Muse phai nam trong FOXPROFILE_UPLOAD_DIRS, neu khong
+    # thi loi chi hien luc gui file, rat kho doan. FOXPROFILE_UPLOAD_DIRS trong .env
+    # tinh tu foxprofile\data (xem .env.example).
+    _allowed_env = os.environ.get("FOXPROFILE_UPLOAD_DIRS", "").strip()
+    if _allowed_env:
+        _bases = []
+        for _part in _allowed_env.split(os.pathsep):
+            _part = _part.strip()
+            if not _part:
+                continue
+            _p = Path(_part)
+            _bases.append((_p if _p.is_absolute() else ROOT / "foxprofile" / "data" / _p).resolve())
+        if _bases and not any(UPLOAD_DIR == _b or _b in UPLOAD_DIR.parents for _b in _bases):
+            raise SystemExit(
+                f"MUSE_UPLOAD_DIR ({UPLOAD_DIR}) khong nam trong FOXPROFILE_UPLOAD_DIRS ({_allowed_env}). "
+                "Sua .env cho MUSE_UPLOAD_DIR nam trong thu muc FoxProfile duoc phep upload roi chay lai.")
     for p in UPLOAD_DIR.iterdir():  # file tam con sot khi bot tat giua chung
         if p.is_dir() and re.fullmatch(r"-?\d+_\d+", p.name):
             shutil.rmtree(p, ignore_errors=True)
